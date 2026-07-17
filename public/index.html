@@ -208,17 +208,43 @@ async function loadProducts() {
 
 function priceBlock(p) {
   if (p.changePct !== undefined) {
+    // Tab "topdrops" ou "toprises" : affiche le % et les deux prix
     const cls = p.changePct > 0 ? 'price-up' : 'price-down';
     const arrow = p.changePct > 0 ? '▲' : '▼';
-    return '<div class="product-price ' + cls + '">' + arrow + ' ' + p.changePct.toFixed(1) + '%<div class="product-meta">' + p.current_price + ' DH (avant ' + p.previous_price + ' DH)</div></div>';
+    return '<div class="product-price ' + cls + '">'
+      + arrow + ' ' + Math.abs(p.changePct).toFixed(1) + '%'
+      + '<div class="product-meta">' + p.current_price + ' DH</div>'
+      + '<div class="product-meta" style="font-size:11px;">avant: ' + p.previous_price + ' DH</div>'
+      + '</div>';
   }
   if (currentTab === 'drops') {
+    // Tab "Changements de prix" : affiche les deux prix et le changement
     const diff = p.current_price - p.previous_price;
+    const diffPct = (diff / p.previous_price) * 100;
     const cls = diff > 0 ? 'price-up' : 'price-down';
     const arrow = diff > 0 ? '▲' : '▼';
-    return '<div class="product-price ' + cls + '">' + arrow + ' ' + p.current_price + ' DH<div class="product-meta">avant: ' + p.previous_price + ' DH</div></div>';
+    return '<div class="product-price ' + cls + '">'
+      + arrow + ' ' + diffPct.toFixed(1) + '%'
+      + '<div class="product-meta">' + p.current_price + ' DH</div>'
+      + '<div class="product-meta" style="font-size:11px;">avant: ' + p.previous_price + ' DH</div>'
+      + '</div>';
   }
-  return '<div class="product-price">' + (p.current_price ?? '?') + ' ' + (p.currency || 'DH') + '</div>';
+  
+  // Tabs normaux : affiche le prix actuel, et en petit l'ancien prix s'il existe dans l'API
+  // (fallback si on n'a pas encore fait le calcul côté API)
+  const oldPrice = p.previous_price_7d;
+  let html = '<div class="product-price">' + (p.current_price ?? '?') + ' <span style="font-size:11px;">' + (p.currency || 'DH') + '</span>';
+  if (oldPrice && oldPrice !== p.current_price) {
+    const diff = p.current_price - oldPrice;
+    const diffPct = (diff / oldPrice) * 100;
+    const cls = diff > 0 ? 'price-up' : 'price-down';
+    const arrow = diff > 0 ? '▲' : '▼';
+    html += '<div class="product-meta ' + cls + '" style="font-size:11px; margin-top:3px;">'
+      + arrow + ' ' + Math.abs(diffPct).toFixed(1) + '% (avant ' + oldPrice + ' DH)'
+      + '</div>';
+  }
+  html += '</div>';
+  return html;
 }
 
 function renderList(items) {
@@ -257,13 +283,21 @@ async function loadWatchlist() {
       return;
     }
     listEl.innerHTML = items.map(p => {
-      const tag = p.targetReached
-        ? '<span class="alert-tag reached">🎯 ATTEINT</span>'
-        : '<span class="alert-tag" style="background:#eee;color:#666;">cible: ' + p.target_price + ' DH</span>';
+      let tagHtml, changeHtml;
+      if (p.targetReached) {
+        tagHtml = '<span class="alert-tag reached">🎯 ATTEINT!</span>';
+        changeHtml = '<div class="product-meta" style="color:var(--green); font-weight:600;">✓ Cible atteinte: ' + p.current_price + ' ≤ ' + p.target_price + ' DH</div>';
+      } else {
+        const remaining = p.target_price - p.current_price;
+        const remainingPct = (remaining / p.current_price) * 100;
+        tagHtml = '<span class="alert-tag" style="background:#eee;color:#666;">cible: ' + p.target_price + ' DH</span>';
+        changeHtml = '<div class="product-meta" style="color:var(--muted);">Encore ' + remaining.toFixed(2) + ' DH (-' + remainingPct.toFixed(1) + '%)</div>';
+      }
       return '<div class="product-card">'
         + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + (p.name||'').replace(/'/g,'') + '\', \'' + (p.slug_url||'') + '\')">'
-        + '<div class="product-name">' + p.name + tag + '</div>'
-        + '<div class="product-meta">Réf. ' + p.article_number + '</div></div>'
+        + '<div><div class="product-name">' + p.name + tagHtml + '</div>'
+        + '<div class="product-meta">Réf. ' + p.article_number + '</div>'
+        + changeHtml + '</div></div>'
         + '<div class="product-price">' + p.current_price + ' ' + p.currency
         + '<div class="product-meta"><button class="watch-btn" onclick="event.stopPropagation(); removeFromWatchlist(\'' + p.article_number + '\')">Retirer</button></div></div>'
         + '</div>';
@@ -314,8 +348,50 @@ async function openHistory(articleNumber, name, url) {
   if (chartInstance) chartInstance.destroy();
   chartInstance = new Chart(document.getElementById('price-chart'), {
     type: 'line',
-    data: { labels, datasets: [{ label: 'Prix (DH)', data: prices, borderColor: '#0058a3', backgroundColor: 'rgba(0,88,163,0.08)', fill: true, stepped: true, pointRadius: 4 }] },
-    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: false } } }
+    data: { 
+      labels, 
+      datasets: [{ 
+        label: 'Prix (DH)', 
+        data: prices, 
+        borderColor: '#0058a3', 
+        backgroundColor: 'rgba(0,88,163,0.08)', 
+        fill: true, 
+        stepped: true, 
+        pointRadius: 4,
+        pointHoverRadius: 6,
+        pointBackgroundColor: '#0058a3',
+        pointBorderColor: 'white',
+        pointBorderWidth: 2,
+      }] 
+    },
+    options: { 
+      responsive: true, 
+      plugins: { 
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: 'rgba(0,0,0,0.8)',
+          padding: 10,
+          titleFont: { size: 13, weight: 'bold' },
+          bodyFont: { size: 12 },
+          callbacks: {
+            title: (context) => context[0].label,
+            label: (context) => 'Prix: ' + context.parsed.y + ' DH',
+            afterLabel: (context) => {
+              const idx = context.dataIndex;
+              if (idx > 0) {
+                const prev = prices[idx - 1];
+                const diff = context.parsed.y - prev;
+                const pct = (diff / prev) * 100;
+                const arrow = diff > 0 ? '▲' : '▼';
+                return arrow + ' ' + Math.abs(pct).toFixed(1) + '% vs avant';
+              }
+              return '';
+            }
+          }
+        }
+      }, 
+      scales: { y: { beginAtZero: false, ticks: { callback: (v) => v + ' DH' } } } 
+    }
   });
 }
 
