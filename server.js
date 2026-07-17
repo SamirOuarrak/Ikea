@@ -3,7 +3,7 @@
 const express = require('express');
 const cron = require('node-cron');
 const db = require('./db');
-const { runFullScrape } = require('./scraper');
+const { runFullScrape, refreshKnownProducts } = require('./scraper');
 
 // Au démarrage, toute ligne encore "running" provient forcément d'un process tué par un
 // redéploiement précédent (un vrai run en cours mourrait avec le process). On les marque
@@ -297,18 +297,44 @@ app.post('/api/scrape/run-now', async (req, res) => {
   }
 });
 
+// Rafraîchissement rapide : revisite uniquement les produits déjà connus (pas de re-crawl
+// des catégories). À utiliser au quotidien — beaucoup plus rapide que run-now.
+app.post('/api/scrape/refresh-now', async (req, res) => {
+  const running = db.prepare(`SELECT * FROM scrape_runs WHERE status='running' ORDER BY id DESC LIMIT 1`).get();
+  if (running) {
+    return res.status(409).json({ status: 'already-running', run: running });
+  }
+  res.json({ status: 'started' });
+  try {
+    await refreshKnownProducts();
+  } catch (err) {
+    console.error('Erreur pendant le rafraîchissement:', err.message);
+  }
+});
+
 app.get('/health', (req, res) => res.status(200).send('ok'));
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`IKEA price tracker en écoute sur 0.0.0.0:${PORT}`);
 });
 
-// Planification: tous les jours à 6h00 (heure du serveur)
+// Planification :
+// - Tous les jours à 6h00 : rafraîchissement rapide des produits déjà connus (prix à jour)
+// - Tous les dimanches à 3h00 : découverte complète (nouveaux produits ajoutés par IKEA)
 cron.schedule('0 6 * * *', async () => {
-  console.log('Cron: démarrage du scraping quotidien');
+  console.log('Cron: rafraîchissement quotidien des prix');
+  try {
+    await refreshKnownProducts();
+  } catch (err) {
+    console.error('Cron: erreur pendant le rafraîchissement:', err.message);
+  }
+});
+
+cron.schedule('0 3 * * 0', async () => {
+  console.log('Cron: découverte hebdomadaire des nouveaux produits');
   try {
     await runFullScrape();
   } catch (err) {
-    console.error('Cron: erreur pendant le scraping:', err.message);
+    console.error('Cron: erreur pendant la découverte complète:', err.message);
   }
 });

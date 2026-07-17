@@ -43,6 +43,7 @@ CREATE TABLE IF NOT EXISTS scrape_runs (
   products_found  INTEGER,
   products_seen   INTEGER,
   products_new    INTEGER,
+  products_failed INTEGER,
   prices_changed  INTEGER,
   status          TEXT
 );
@@ -58,6 +59,11 @@ CREATE TABLE IF NOT EXISTS watchlist (
 // Ajoute la colonne si la base existe déjà depuis une version précédente (sans planter si elle existe déjà)
 try {
   db.exec('ALTER TABLE scrape_runs ADD COLUMN products_found INTEGER');
+} catch (e) {
+  /* colonne déjà présente, on ignore */
+}
+try {
+  db.exec('ALTER TABLE scrape_runs ADD COLUMN products_failed INTEGER');
 } catch (e) {
   /* colonne déjà présente, on ignore */
 }

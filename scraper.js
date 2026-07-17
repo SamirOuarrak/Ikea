@@ -164,7 +164,12 @@ function parseProductPage(html, url) {
     };
   }
 
-  return null; // aucune des deux méthodes n'a fonctionné pour cette page
+  // Rien n'a fonctionné : on renvoie la raison précise pour le diagnostic (au lieu de juste null)
+  let failReason = 'unknown';
+  if (/captcha|access denied|blocked|are you human/i.test(bodyText)) failReason = 'blocked';
+  else if (!articleNumber) failReason = 'no-article-number';
+  else if (!priceMatch) failReason = 'no-price-found';
+  return { failReason, bodyLength: bodyText.length };
 }
 
 function extractArticleNumberFallback($) {
@@ -174,11 +179,15 @@ function extractArticleNumberFallback($) {
 }
 
 async function scrapeProduct(url, categoryName) {
-  const html = await getHtml(url);
+  let html;
+  try {
+    html = await getHtml(url);
+  } catch (err) {
+    return { failReason: 'http-error: ' + (err.code || err.message) };
+  }
   const data = parseProductPage(html, url);
   if (!data || !data.articleNumber || !data.price) {
-    console.warn(`[scrape] données incomplètes pour ${url}`);
-    return null;
+    return { failReason: (data && data.failReason) || 'unknown' };
   }
   return { ...data, url, categoryName: categoryName || null };
 }
@@ -215,6 +224,72 @@ function upsertProduct({ articleNumber, name, url, price, currency, unitNote, im
   return { isNew: false, priceChanged };
 }
 
+// Rafraîchissement rapide : revisite directement les produits déjà connus (via leur URL
+// enregistrée en base) sans refaire le crawl complet des catégories. Beaucoup plus rapide
+// pour un usage quotidien — la découverte complète (nouveaux produits) est faite séparément.
+async function refreshKnownProducts() {
+  const runStart = db.prepare(`INSERT INTO scrape_runs (status) VALUES ('running')`).run();
+  const runId = runStart.lastInsertRowid;
+
+  const known = db
+    .prepare(`SELECT article_number, slug_url, category FROM products WHERE is_active = 1`)
+    .all();
+
+  let productsSeen = 0;
+  let pricesChanged = 0;
+  let productsFailed = 0;
+
+  db.prepare(`UPDATE scrape_runs SET products_found=? WHERE id=?`).run(known.length, runId);
+  console.log(`=== Rafraîchissement rapide de ${known.length} produits connus ===`);
+
+  try {
+    for (const p of known) {
+      try {
+        const data = await scrapeProduct(p.slug_url, p.category);
+        if (data && data.articleNumber) {
+          const { priceChanged } = upsertProduct({
+            articleNumber: data.articleNumber,
+            name: data.name,
+            url: data.url,
+            price: data.price,
+            currency: data.currency,
+            unitNote: data.unitNote,
+            imageUrl: data.imageUrl,
+            categoryName: data.categoryName,
+          });
+          productsSeen++;
+          if (priceChanged) pricesChanged++;
+        } else {
+          productsFailed++;
+        }
+      } catch (err) {
+        productsFailed++;
+        console.error(`[refresh] erreur sur ${p.slug_url}: ${err.message}`);
+      }
+
+      if ((productsSeen + productsFailed) % 10 === 0) {
+        db.prepare(
+          `UPDATE scrape_runs SET products_seen=?, prices_changed=?, products_failed=? WHERE id=?`
+        ).run(productsSeen, pricesChanged, productsFailed, runId);
+      }
+
+      await sleep(300);
+    }
+
+    db.prepare(
+      `UPDATE scrape_runs SET finished_at=datetime('now'), products_seen=?, products_new=0, prices_changed=?, products_failed=?, status='done' WHERE id=?`
+    ).run(productsSeen, pricesChanged, productsFailed, runId);
+
+    console.log(`=== Rafraîchissement terminé: ${productsSeen} ok, ${pricesChanged} prix changés, ${productsFailed} échecs ===`);
+  } catch (err) {
+    db.prepare(`UPDATE scrape_runs SET finished_at=datetime('now'), status=? WHERE id=?`).run(
+      `error: ${err.message}`,
+      runId
+    );
+    throw err;
+  }
+}
+
 async function runFullScrape() {
   const runStart = db
     .prepare(`INSERT INTO scrape_runs (status) VALUES ('running')`)
@@ -224,6 +299,8 @@ async function runFullScrape() {
   let productsSeen = 0;
   let productsNew = 0;
   let pricesChanged = 0;
+  let productsFailed = 0;
+  const failReasonCounts = {};
 
   try {
     console.log('=== Découverte des produits (parcours des catégories) ===');
@@ -235,7 +312,7 @@ async function runFullScrape() {
     for (const { url, categoryName } of productUrls) {
       try {
         const data = await scrapeProduct(url, categoryName);
-        if (data) {
+        if (data && data.articleNumber) {
           const { isNew, priceChanged } = upsertProduct({
             articleNumber: data.articleNumber,
             name: data.name,
@@ -249,29 +326,35 @@ async function runFullScrape() {
           productsSeen++;
           if (isNew) productsNew++;
           if (priceChanged) pricesChanged++;
+        } else {
+          productsFailed++;
+          const reason = (data && data.failReason) || 'unknown';
+          failReasonCounts[reason] = (failReasonCounts[reason] || 0) + 1;
+          if (productsFailed <= 10 || productsFailed % 200 === 0) {
+            console.warn(`[scrape] échec (${reason}) sur ${url} — total échecs: ${productsFailed}`);
+          }
         }
       } catch (err) {
+        productsFailed++;
         console.error(`[scrape] erreur sur ${url}: ${err.message}`);
       }
 
       // Progression en direct toutes les 5 fiches, visible depuis le dashboard
-      if (productsSeen % 5 === 0) {
-        db.prepare(`UPDATE scrape_runs SET products_seen=?, products_new=?, prices_changed=? WHERE id=?`).run(
-          productsSeen,
-          productsNew,
-          pricesChanged,
-          runId
-        );
+      if ((productsSeen + productsFailed) % 5 === 0) {
+        db.prepare(
+          `UPDATE scrape_runs SET products_seen=?, products_new=?, prices_changed=?, products_failed=? WHERE id=?`
+        ).run(productsSeen, productsNew, pricesChanged, productsFailed, runId);
       }
 
       await sleep(300); // politesse envers le serveur
     }
 
     db.prepare(
-      `UPDATE scrape_runs SET finished_at=datetime('now'), products_seen=?, products_new=?, prices_changed=?, status='done' WHERE id=?`
-    ).run(productsSeen, productsNew, pricesChanged, runId);
+      `UPDATE scrape_runs SET finished_at=datetime('now'), products_seen=?, products_new=?, prices_changed=?, products_failed=?, status='done' WHERE id=?`
+    ).run(productsSeen, productsNew, pricesChanged, productsFailed, runId);
 
-    console.log(`=== Terminé: ${productsSeen} vus, ${productsNew} nouveaux, ${pricesChanged} prix changés ===`);
+    console.log(`=== Terminé: ${productsSeen} vus, ${productsNew} nouveaux, ${pricesChanged} prix changés, ${productsFailed} échecs ===`);
+    console.log('=== Répartition des échecs:', JSON.stringify(failReasonCounts), '===');
   } catch (err) {
     db.prepare(`UPDATE scrape_runs SET finished_at=datetime('now'), status=? WHERE id=?`).run(
       `error: ${err.message}`,
@@ -281,4 +364,4 @@ async function runFullScrape() {
   }
 }
 
-module.exports = { runFullScrape, scrapeProduct, discoverAllProductUrls, parseProductPage };
+module.exports = { runFullScrape, refreshKnownProducts, scrapeProduct, discoverAllProductUrls, parseProductPage };
