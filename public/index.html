@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IKEA Maroc — Suivi des prix</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  :root {
+    --ikea-blue: #0058a3;
+    --ikea-yellow: #ffdb00;
+    --bg: #f2f2f2;
+    --card: #ffffff;
+    --text: #111111;
+    --muted: #6b6b6b;
+    --green: #2e7d32;
+    --red: #c62828;
+    --border: #e2e2e2;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: 'Segoe UI', Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
+  header { background: var(--ikea-blue); color: white; padding: 18px 24px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 5; }
+  header .badge { background: var(--ikea-yellow); color: var(--ikea-blue); font-weight: 800; padding: 4px 10px; border-radius: 4px; font-size: 14px; }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
+  header .scrape-btn { background: var(--ikea-yellow); color: var(--ikea-blue); border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 13px; }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 20px; }
+  .kpi-card { background: var(--card); border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+  .kpi-card .kpi-label { font-size: 11.5px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.03em; margin-bottom: 4px; }
+  .kpi-card .kpi-value { font-size: 22px; font-weight: 700; }
+  .kpi-card .kpi-value.green { color: var(--green); }
+  .kpi-card .kpi-value.red { color: var(--red); }
+
+  .top-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
+  .search-bar { display: flex; gap: 8px; flex: 1; min-width: 220px; }
+  .search-bar input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
+  select, .num-input {
+    padding: 10px 10px; border-radius: 8px; border: 1px solid var(--border); font-size: 13.5px; background: white; color: var(--text);
+  }
+  .num-input { width: 80px; }
+  button.primary { background: var(--ikea-blue); color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13.5px; }
+  button.ghost { background: white; border: 1px solid var(--border); padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+  label.checkbox { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); white-space: nowrap; }
+
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab { padding: 8px 14px; border-radius: 20px; background: var(--card); border: 1px solid var(--border); cursor: pointer; font-size: 13px; color: var(--muted); }
+  .tab.active { background: var(--ikea-blue); color: white; border-color: var(--ikea-blue); }
+
+  #scrape-status-text { font-size: 12.5px; color: var(--muted); }
+
+  .product-list { display: flex; flex-direction: column; gap: 10px; }
+  .product-card { background: var(--card); border-radius: 10px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); gap: 10px; }
+  .product-card .clickable { cursor: pointer; flex: 1; min-width: 0; }
+  .product-name { font-weight: 600; font-size: 14.5px; }
+  .product-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
+  .cat-tag { display: inline-block; background: #eef4fb; color: var(--ikea-blue); font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 5px; }
+  .product-price { font-weight: 700; font-size: 15.5px; white-space: nowrap; text-align: right; }
+  .price-up { color: var(--red); }
+  .price-down { color: var(--green); }
+  .new-tag, .alert-tag { background: var(--ikea-yellow); color: var(--ikea-blue); font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 4px; margin-left: 6px; }
+  .alert-tag.reached { background: var(--green); color: white; }
+  .watch-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
+
+  #modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; padding: 16px; z-index: 10; }
+  #modal { background: white; border-radius: 12px; padding: 20px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; }
+  #modal h2 { margin-top: 0; font-size: 17px; }
+  #modal .close-btn { float: right; cursor: pointer; font-size: 20px; color: var(--muted); }
+  .watch-form { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
+  .watch-form input { flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); }
+
+  .empty-state { text-align: center; color: var(--muted); padding: 40px 0; font-size: 14px; }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="badge">IKEA</span>
+  <h1>Suivi des prix — Maroc</h1>
+  <button class="scrape-btn" onclick="triggerScrape()">🔄 Scraper</button>
+</header>
+
+<main>
+  <div id="kpi-grid" class="kpi-grid"></div>
+  <div id="scrape-status-text" style="margin-bottom:14px;"></div>
+
+  <div class="top-bar">
+    <div class="search-bar">
+      <input id="search-input" type="text" placeholder="Rechercher un produit..." onkeydown="if(event.key==='Enter') loadProducts()" />
+      <button class="primary" onclick="loadProducts()">Rechercher</button>
+    </div>
+    <select id="category-filter" onchange="loadProducts()"><option value="">Toutes catégories</option></select>
+    <input class="num-input" id="min-price" type="number" placeholder="Min DH" onchange="loadProducts()" />
+    <input class="num-input" id="max-price" type="number" placeholder="Max DH" onchange="loadProducts()" />
+    <select id="sort-select" onchange="loadProducts()">
+      <option value="recent">Plus récent</option>
+      <option value="price_asc">Prix croissant</option>
+      <option value="price_desc">Prix décroissant</option>
+      <option value="name">Nom (A-Z)</option>
+      <option value="biggest_drop">Plus grosse baisse</option>
+    </select>
+    <label class="checkbox"><input type="checkbox" id="promo-only" onchange="loadProducts()" /> Promo uniquement</label>
+    <button class="ghost" onclick="window.location.href='/api/export/csv'">⬇️ Export CSV</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" data-tab="all" onclick="switchTab('all')">Tous les produits</div>
+    <div class="tab" data-tab="new" onclick="switchTab('new')">Nouveautés</div>
+    <div class="tab" data-tab="drops" onclick="switchTab('drops')">Changements de prix</div>
+    <div class="tab" data-tab="topdrops" onclick="switchTab('topdrops')">Top baisses</div>
+    <div class="tab" data-tab="toprises" onclick="switchTab('toprises')">Top hausses</div>
+    <div class="tab" data-tab="watchlist" onclick="switchTab('watchlist')">🔔 Mes alertes</div>
+  </div>
+
+  <div id="product-list" class="product-list">
+    <div class="empty-state">Chargement...</div>
+  </div>
+</main>
+
+<div id="modal-overlay" onclick="if(event.target===this) closeModal()">
+  <div id="modal">
+    <span class="close-btn" onclick="closeModal()">&times;</span>
+    <h2 id="modal-title">Produit</h2>
+    <canvas id="price-chart" height="220"></canvas>
+    <div class="watch-form">
+      <input id="target-price-input" type="number" placeholder="Prix cible (DH)" />
+      <button class="primary" onclick="addToWatchlist()">🔔 M'alerter</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let currentTab = 'all';
+let chartInstance = null;
+let currentArticleNumber = null;
+
+async function loadKpis() {
+  try {
+    const res = await fetch('/api/stats');
+    const s = await res.json();
+    const grid = document.getElementById('kpi-grid');
+    const lastRunText = s.lastRun ? new Date(s.lastRun.started_at).toLocaleString('fr-FR') : 'Jamais';
+    grid.innerHTML = [
+      ['Produits suivis', s.totalProducts, ''],
+      ['Valeur totale catalogue', s.totalValue.toLocaleString('fr-FR') + ' DH', ''],
+      ['Prix moyen', s.avgPrice + ' DH', ''],
+      ['Baisses (7j)', s.drops7d, 'green'],
+      ['Hausses (7j)', s.rises7d, 'red'],
+      ['Nouveautés (7j)', s.newThisWeek, ''],
+    ].map(([label, value, cls]) =>
+      '<div class="kpi-card"><div class="kpi-label">' + label + '</div><div class="kpi-value ' + cls + '">' + value + '</div></div>'
+    ).join('') + '<div class="kpi-card"><div class="kpi-label">Dernier scraping</div><div class="kpi-value" style="font-size:13px;">' + lastRunText + '</div></div>';
+  } catch (err) { /* silencieux */ }
+}
+
+async function loadCategories() {
+  try {
+    const res = await fetch('/api/categories');
+    const cats = await res.json();
+    const sel = document.getElementById('category-filter');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Toutes catégories</option>' +
+      cats.map(c => '<option value="' + c.category.replace(/"/g,'') + '">' + c.category + ' (' + c.count + ')</option>').join('');
+    sel.value = current;
+  } catch (err) { /* silencieux */ }
+}
+
+async function loadProducts() {
+  const listEl = document.getElementById('product-list');
+  listEl.innerHTML = '<div class="empty-state">Chargement...</div>';
+
+  if (currentTab === 'watchlist') return loadWatchlist();
+
+  const q = document.getElementById('search-input').value.trim();
+  const category = document.getElementById('category-filter').value;
+  const minPrice = document.getElementById('min-price').value;
+  const maxPrice = document.getElementById('max-price').value;
+  const sort = document.getElementById('sort-select').value;
+  const promoOnly = document.getElementById('promo-only').checked;
+
+  let url;
+  if (currentTab === 'new') url = '/api/products/new?days=7';
+  else if (currentTab === 'drops') url = '/api/products/price-drops?days=7';
+  else if (currentTab === 'topdrops') url = '/api/analysis/top-movers?direction=drop&days=7&limit=30';
+  else if (currentTab === 'toprises') url = '/api/analysis/top-movers?direction=rise&days=7&limit=30';
+  else {
+    const params = new URLSearchParams();
+    if (q) params.set('q', q);
+    if (category) params.set('category', category);
+    if (minPrice) params.set('minPrice', minPrice);
+    if (maxPrice) params.set('maxPrice', maxPrice);
+    if (sort) params.set('sort', sort);
+    if (promoOnly) params.set('promoOnly', 'true');
+    url = '/api/products?' + params.toString();
+  }
+
+  try {
+    const res = await fetch(url);
+    const data = await res.json();
+    renderList(data);
+  } catch (err) {
+    listEl.innerHTML = '<div class="empty-state">Erreur de chargement.</div>';
+  }
+}
+
+function priceBlock(p) {
+  if (p.changePct !== undefined) {
+    const cls = p.changePct > 0 ? 'price-up' : 'price-down';
+    const arrow = p.changePct > 0 ? '▲' : '▼';
+    return '<div class="product-price ' + cls + '">' + arrow + ' ' + p.changePct.toFixed(1) + '%<div class="product-meta">' + p.current_price + ' DH (avant ' + p.previous_price + ' DH)</div></div>';
+  }
+  if (currentTab === 'drops') {
+    const diff = p.current_price - p.previous_price;
+    const cls = diff > 0 ? 'price-up' : 'price-down';
+    const arrow = diff > 0 ? '▲' : '▼';
+    return '<div class="product-price ' + cls + '">' + arrow + ' ' + p.current_price + ' DH<div class="product-meta">avant: ' + p.previous_price + ' DH</div></div>';
+  }
+  return '<div class="product-price">' + (p.current_price ?? '?') + ' ' + (p.currency || 'DH') + '</div>';
+}
+
+function renderList(items) {
+  const listEl = document.getElementById('product-list');
+  if (!items.length) {
+    listEl.innerHTML = '<div class="empty-state">Aucun résultat.</div>';
+    return;
+  }
+
+  listEl.innerHTML = items.map(p => {
+    const isNew = currentTab === 'new' ? '<span class="new-tag">NOUVEAU</span>' : '';
+    const catTag = p.category ? '<span class="cat-tag">' + p.category + '</span>' : '';
+    const safeName = (p.name || '').replace(/'/g, '');
+    return '<div class="product-card">'
+      + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + safeName + '\')">'
+      + '<div class="product-name">' + catTag + p.name + isNew + '</div>'
+      + '<div class="product-meta">Réf. ' + p.article_number + '</div></div>'
+      + priceBlock(p)
+      + '</div>';
+  }).join('');
+}
+
+async function loadWatchlist() {
+  const listEl = document.getElementById('product-list');
+  try {
+    const res = await fetch('/api/watchlist');
+    const items = await res.json();
+    if (!items.length) {
+      listEl.innerHTML = '<div class="empty-state">Aucune alerte définie. Ouvre un produit et clique "M\'alerter" pour en ajouter une.</div>';
+      return;
+    }
+    listEl.innerHTML = items.map(p => {
+      const tag = p.targetReached
+        ? '<span class="alert-tag reached">🎯 ATTEINT</span>'
+        : '<span class="alert-tag" style="background:#eee;color:#666;">cible: ' + p.target_price + ' DH</span>';
+      return '<div class="product-card">'
+        + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + (p.name||'').replace(/'/g,'') + '\')">'
+        + '<div class="product-name">' + p.name + tag + '</div>'
+        + '<div class="product-meta">Réf. ' + p.article_number + '</div></div>'
+        + '<div class="product-price">' + p.current_price + ' ' + p.currency
+        + '<div class="product-meta"><button class="watch-btn" onclick="event.stopPropagation(); removeFromWatchlist(\'' + p.article_number + '\')">Retirer</button></div></div>'
+        + '</div>';
+    }).join('');
+  } catch (err) {
+    listEl.innerHTML = '<div class="empty-state">Erreur de chargement.</div>';
+  }
+}
+
+async function addToWatchlist() {
+  const target = document.getElementById('target-price-input').value;
+  if (!target || !currentArticleNumber) return;
+  await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ articleNumber: currentArticleNumber, targetPrice: parseFloat(target) }),
+  });
+  closeModal();
+  if (currentTab === 'watchlist') loadWatchlist();
+}
+
+async function removeFromWatchlist(articleNumber) {
+  await fetch('/api/watchlist/' + articleNumber, { method: 'DELETE' });
+  loadWatchlist();
+}
+
+function switchTab(tab) {
+  currentTab = tab;
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
+  loadProducts();
+}
+
+async function openHistory(articleNumber, name) {
+  currentArticleNumber = articleNumber;
+  document.getElementById('modal-title').textContent = name;
+  document.getElementById('target-price-input').value = '';
+  document.getElementById('modal-overlay').style.display = 'flex';
+
+  const res = await fetch('/api/products/' + articleNumber + '/history');
+  const history = await res.json();
+
+  const labels = history.map(h => new Date(h.checked_at).toLocaleDateString('fr-FR'));
+  const prices = history.map(h => h.price);
+
+  if (chartInstance) chartInstance.destroy();
+  chartInstance = new Chart(document.getElementById('price-chart'), {
+    type: 'line',
+    data: { labels, datasets: [{ label: 'Prix (DH)', data: prices, borderColor: '#0058a3', backgroundColor: 'rgba(0,88,163,0.08)', fill: true, stepped: true, pointRadius: 4 }] },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: false } } }
+  });
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').style.display = 'none';
+}
+
+async function triggerScrape() {
+  const statusText = document.getElementById('scrape-status-text');
+  try {
+    const res = await fetch('/api/scrape/run-now', { method: 'POST' });
+    if (res.status === 409) {
+      statusText.textContent = 'Un scraping est déjà en cours...';
+      pollScrapeStatus();
+      return;
+    }
+    statusText.textContent = 'Démarrage du scraping...';
+    pollScrapeStatus();
+  } catch (err) {
+    statusText.textContent = 'Erreur au démarrage du scraping.';
+  }
+}
+
+async function pollScrapeStatus() {
+  const statusText = document.getElementById('scrape-status-text');
+  try {
+    const res = await fetch('/api/scrape-runs');
+    const runs = await res.json();
+    const latest = runs[0];
+    if (!latest) return;
+
+    if (latest.status === 'running') {
+      const found = latest.products_found;
+      const seen = latest.products_seen || 0;
+      statusText.textContent = found
+        ? 'Scraping en cours... ' + seen + ' / ' + found + ' produits traités'
+        : 'Découverte des catégories en cours... (peut prendre plusieurs minutes)';
+      setTimeout(pollScrapeStatus, 5000);
+    } else if (latest.status === 'done') {
+      statusText.textContent = '✅ Dernier scraping terminé : ' + latest.products_seen + ' produits, ' + latest.products_new + ' nouveaux, ' + latest.prices_changed + ' prix changés.';
+      loadProducts();
+      loadKpis();
+      loadCategories();
+    } else {
+      statusText.textContent = '';
+    }
+  } catch (err) {
+    statusText.textContent = 'Impossible de vérifier le statut.';
+  }
+}
+
+loadKpis();
+loadCategories();
+loadProducts();
+pollScrapeStatus();
+</script>
+
+</body>
+</html>
