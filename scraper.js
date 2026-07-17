@@ -116,7 +116,7 @@ function extractCategoryName(html, url) {
 function parseProductPage(html, url) {
   const $ = cheerio.load(html);
 
-  // Stratégie 1: JSON-LD
+  // Stratégie 1: JSON-LD (la plus fiable, données structurées)
   let jsonLdData = null;
   $('script[type="application/ld+json"]').each((_, el) => {
     if (jsonLdData) return;
@@ -130,10 +130,11 @@ function parseProductPage(html, url) {
     }
   });
 
-  if (jsonLdData) {
+  if (jsonLdData && jsonLdData.offers) {
     const offer = Array.isArray(jsonLdData.offers) ? jsonLdData.offers[0] : jsonLdData.offers;
     const price = offer ? parseFloat(offer.price) : null;
-    if (price) {
+    // Validation simple : un prix IKEA Maroc est rarement < 5 DH ou > 100 000 DH
+    if (price && price >= 5 && price <= 100000) {
       return {
         articleNumber: jsonLdData.sku || jsonLdData.mpn || extractArticleNumberFallback($),
         name: jsonLdData.name || $('h1').first().text().trim(),
@@ -146,30 +147,39 @@ function parseProductPage(html, url) {
     }
   }
 
-  // Stratégie 2: fallback regex sur le texte brut (format observé: "19,90DH")
+  // Stratégie 2: Fallback regex sur le texte brut, MAIS avec validation du prix
+  // (pour éviter de capturer des numéros d'article ou des prix de pièces détachées)
   const bodyText = $('body').text();
-  const priceMatch = bodyText.match(/(\d[\d\s]*,\d{2})\s*DH(\/[^\s]+)?/);
-  const articleNumber = extractArticleNumberFallback($);
+  const allMatches = [];
+  let match;
+  const priceRegex = /(\d[\d\s]*,\d{2})\s*DH(\/[^\s]+)?/g;
+  while ((match = priceRegex.exec(bodyText)) !== null) {
+    const price = parseFloat(match[1].replace(/\s/g, '').replace(',', '.'));
+    allMatches.push({ price, match: match[0], index: match.index });
+  }
 
-  if (priceMatch) {
-    const price = parseFloat(priceMatch[1].replace(/\s/g, '').replace(',', '.'));
+  // Filtre : garde seulement les prix "IKEA valides" et prend le premier trouvé
+  const validPrice = allMatches.find((m) => m.price >= 5 && m.price <= 100000);
+  if (validPrice) {
+    const articleNumber = extractArticleNumberFallback($);
     return {
       articleNumber,
       name: $('h1').first().text().trim(),
-      price,
+      price: validPrice.price,
       currency: 'MAD',
-      unitNote: priceMatch[2] || null,
+      unitNote: validPrice.match.includes('/') ? validPrice.match.split('DH')[1].trim() : null,
       imageUrl: $('meta[property="og:image"]').attr('content') || null,
-      method: 'regex-fallback',
+      method: 'regex-fallback-validated',
     };
   }
 
-  // Rien n'a fonctionné : on renvoie la raison précise pour le diagnostic (au lieu de juste null)
+  // Rien n'a fonctionné : on renvoie la raison précise pour le diagnostic
   let failReason = 'unknown';
   if (/captcha|access denied|blocked|are you human/i.test(bodyText)) failReason = 'blocked';
-  else if (!articleNumber) failReason = 'no-article-number';
-  else if (!priceMatch) failReason = 'no-price-found';
-  return { failReason, bodyLength: bodyText.length };
+  else if (!extractArticleNumberFallback($)) failReason = 'no-article-number';
+  else if (allMatches.length === 0) failReason = 'no-price-pattern-found';
+  else if (allMatches.every((m) => m.price < 5 || m.price > 100000)) failReason = 'all-prices-out-of-range';
+  return { failReason, bodyLength: bodyText.length, pricesFound: allMatches.map((m) => m.price) };
 }
 
 function extractArticleNumberFallback($) {

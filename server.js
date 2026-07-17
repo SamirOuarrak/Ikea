@@ -314,6 +314,66 @@ app.post('/api/scrape/refresh-now', async (req, res) => {
 
 app.get('/health', (req, res) => res.status(200).send('ok'));
 
+// Debug : diagnostic de l'extraction de prix pour une URL spécifique
+app.get('/api/debug/extract-price', async (req, res) => {
+  const { url } = req.query;
+  if (!url) return res.status(400).json({ error: 'url requis' });
+
+  const axios = require('axios');
+  const cheerio = require('cheerio');
+  try {
+    const response = await axios.get(url, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36',
+        'Accept-Language': 'fr-MA,fr;q=0.9',
+      },
+    });
+    const html = response.data;
+    const $ = cheerio.load(html);
+
+    // Cherche tous les prix dans la page
+    const bodyText = $('body').text();
+    const allPrices = [];
+    let match;
+    const priceRegex = /(\d[\d\s]*,\d{2})\s*DH(\/[^\s]+)?/g;
+    while ((match = priceRegex.exec(bodyText)) !== null) {
+      const price = parseFloat(match[1].replace(/\s/g, '').replace(',', '.'));
+      allPrices.push({ price, match: match[0], index: match.index });
+    }
+
+    // Cherche le prix en JSON-LD
+    let jsonLdPrice = null;
+    $('script[type="application/ld+json"]').each((_, el) => {
+      if (jsonLdPrice) return;
+      try {
+        const parsed = JSON.parse($(el).contents().text());
+        const candidates = Array.isArray(parsed) ? parsed : [parsed];
+        const product = candidates.find((c) => c['@type'] === 'Product');
+        if (product && product.offers) {
+          const offer = Array.isArray(product.offers) ? product.offers[0] : product.offers;
+          if (offer && offer.price) jsonLdPrice = { price: parseFloat(offer.price), source: 'json-ld' };
+        }
+      } catch (_) {}
+    });
+
+    // H1 et structure de la page
+    const h1 = $('h1').first().text().trim();
+    const priceSection = $('[class*="price"], [id*="price"]').html()?.substring(0, 200) || '(not found)';
+
+    res.json({
+      url,
+      h1,
+      jsonLdPrice,
+      allPricesFoundInPage: allPrices.slice(0, 10),
+      totalPricesFound: allPrices.length,
+      priceSectionHtmlPreview: priceSection,
+    });
+  } catch (err) {
+    res.json({ success: false, errorMessage: err.message });
+  }
+});
+
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`IKEA price tracker en écoute sur 0.0.0.0:${PORT}`);
 });
