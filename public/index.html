@@ -50,8 +50,9 @@
   #scrape-status-text { font-size: 12.5px; color: var(--muted); }
 
   .product-list { display: flex; flex-direction: column; gap: 10px; }
-  .product-card { background: var(--card); border-radius: 10px; padding: 14px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); gap: 10px; }
-  .product-card .clickable { cursor: pointer; flex: 1; min-width: 0; }
+  .product-card { background: var(--card); border-radius: 10px; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); gap: 10px; }
+  .product-card .clickable { cursor: pointer; flex: 1; min-width: 0; display: flex; gap: 12px; align-items: center; }
+  .product-thumb { width: 52px; height: 52px; border-radius: 8px; object-fit: cover; background: #f0f0f0; flex-shrink: 0; }
   .product-name { font-weight: 600; font-size: 14.5px; }
   .product-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .cat-tag { display: inline-block; background: #eef4fb; color: var(--ikea-blue); font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 5px; }
@@ -77,7 +78,8 @@
 <header>
   <span class="badge">IKEA</span>
   <h1>Suivi des prix — Maroc</h1>
-  <button class="scrape-btn" onclick="triggerScrape()">🔄 Scraper</button>
+  <button class="scrape-btn" onclick="triggerScrape('refresh')">🔄 Actualiser prix</button>
+  <button class="scrape-btn" onclick="triggerScrape('full')" style="background:white;">🔍 Chercher nouveautés</button>
 </header>
 
 <main>
@@ -121,6 +123,7 @@
   <div id="modal">
     <span class="close-btn" onclick="closeModal()">&times;</span>
     <h2 id="modal-title">Produit</h2>
+    <a id="modal-link" href="#" target="_blank" rel="noopener" style="font-size:13px; color:var(--ikea-blue); display:inline-block; margin-bottom:10px;">Voir sur IKEA.ma ↗</a>
     <canvas id="price-chart" height="220"></canvas>
     <div class="watch-form">
       <input id="target-price-input" type="number" placeholder="Prix cible (DH)" />
@@ -229,10 +232,16 @@ function renderList(items) {
     const isNew = currentTab === 'new' ? '<span class="new-tag">NOUVEAU</span>' : '';
     const catTag = p.category ? '<span class="cat-tag">' + p.category + '</span>' : '';
     const safeName = (p.name || '').replace(/'/g, '');
+    const thumb = p.image_url
+      ? '<img class="product-thumb" src="' + p.image_url + '" loading="lazy" onerror="this.style.display=\'none\'" />'
+      : '<div class="product-thumb"></div>';
     return '<div class="product-card">'
-      + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + safeName + '\')">'
-      + '<div class="product-name">' + catTag + p.name + isNew + '</div>'
-      + '<div class="product-meta">Réf. ' + p.article_number + '</div></div>'
+      + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + safeName + '\', \'' + (p.slug_url||'') + '\')">'
+      + thumb
+      + '<div><div class="product-name">' + catTag + p.name + isNew + '</div>'
+      + '<div class="product-meta">Réf. ' + p.article_number
+      + (p.slug_url ? ' · <a href="' + p.slug_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--ikea-blue);">Voir sur IKEA.ma ↗</a>' : '')
+      + '</div></div></div>'
       + priceBlock(p)
       + '</div>';
   }).join('');
@@ -252,7 +261,7 @@ async function loadWatchlist() {
         ? '<span class="alert-tag reached">🎯 ATTEINT</span>'
         : '<span class="alert-tag" style="background:#eee;color:#666;">cible: ' + p.target_price + ' DH</span>';
       return '<div class="product-card">'
-        + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + (p.name||'').replace(/'/g,'') + '\')">'
+        + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + (p.name||'').replace(/'/g,'') + '\', \'' + (p.slug_url||'') + '\')">'
         + '<div class="product-name">' + p.name + tag + '</div>'
         + '<div class="product-meta">Réf. ' + p.article_number + '</div></div>'
         + '<div class="product-price">' + p.current_price + ' ' + p.currency
@@ -287,10 +296,13 @@ function switchTab(tab) {
   loadProducts();
 }
 
-async function openHistory(articleNumber, name) {
+async function openHistory(articleNumber, name, url) {
   currentArticleNumber = articleNumber;
   document.getElementById('modal-title').textContent = name;
   document.getElementById('target-price-input').value = '';
+  const linkEl = document.getElementById('modal-link');
+  if (url) { linkEl.href = url; linkEl.style.display = 'inline-block'; }
+  else { linkEl.style.display = 'none'; }
   document.getElementById('modal-overlay').style.display = 'flex';
 
   const res = await fetch('/api/products/' + articleNumber + '/history');
@@ -311,16 +323,17 @@ function closeModal() {
   document.getElementById('modal-overlay').style.display = 'none';
 }
 
-async function triggerScrape() {
+async function triggerScrape(mode) {
   const statusText = document.getElementById('scrape-status-text');
+  const endpoint = mode === 'full' ? '/api/scrape/run-now' : '/api/scrape/refresh-now';
   try {
-    const res = await fetch('/api/scrape/run-now', { method: 'POST' });
+    const res = await fetch(endpoint, { method: 'POST' });
     if (res.status === 409) {
       statusText.textContent = 'Un scraping est déjà en cours...';
       pollScrapeStatus();
       return;
     }
-    statusText.textContent = 'Démarrage du scraping...';
+    statusText.textContent = mode === 'full' ? 'Recherche de nouveautés (crawl complet)...' : 'Actualisation des prix connus...';
     pollScrapeStatus();
   } catch (err) {
     statusText.textContent = 'Erreur au démarrage du scraping.';
@@ -338,12 +351,13 @@ async function pollScrapeStatus() {
     if (latest.status === 'running') {
       const found = latest.products_found;
       const seen = latest.products_seen || 0;
+      const failed = latest.products_failed || 0;
       statusText.textContent = found
-        ? 'Scraping en cours... ' + seen + ' / ' + found + ' produits traités'
+        ? 'Scraping en cours... ' + seen + ' réussis / ' + failed + ' échecs / ' + found + ' au total'
         : 'Découverte des catégories en cours... (peut prendre plusieurs minutes)';
       setTimeout(pollScrapeStatus, 5000);
     } else if (latest.status === 'done') {
-      statusText.textContent = '✅ Dernier scraping terminé : ' + latest.products_seen + ' produits, ' + latest.products_new + ' nouveaux, ' + latest.prices_changed + ' prix changés.';
+      statusText.textContent = '✅ Dernier scraping : ' + latest.products_seen + ' réussis, ' + (latest.products_failed || 0) + ' échecs, ' + latest.products_new + ' nouveaux, ' + latest.prices_changed + ' prix changés.';
       loadProducts();
       loadKpis();
       loadCategories();
