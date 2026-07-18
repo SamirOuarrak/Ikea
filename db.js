@@ -20,10 +20,13 @@ CREATE TABLE IF NOT EXISTS products (
   current_price     REAL,
   currency          TEXT DEFAULT 'DH',
   unit_note         TEXT,                -- ex: "/2 pieces", "/4 pieces"
+  group_key         TEXT,                -- regroupe les variantes (couleur/taille) d'un même article
   first_seen_at     TEXT DEFAULT (datetime('now')),
   last_checked_at   TEXT,
   is_active         INTEGER DEFAULT 1    -- passe à 0 si le produit disparaît du site (retiré du catalogue)
 );
+
+CREATE INDEX IF NOT EXISTS idx_products_group_key ON products(group_key);
 
 CREATE TABLE IF NOT EXISTS price_history (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -56,16 +59,25 @@ CREATE TABLE IF NOT EXISTS watchlist (
 );
 `);
 
-// Ajoute la colonne si la base existe déjà depuis une version précédente (sans planter si elle existe déjà)
-try {
-  db.exec('ALTER TABLE scrape_runs ADD COLUMN products_found INTEGER');
-} catch (e) {
-  /* colonne déjà présente, on ignore */
+// Ajoute les colonnes si la base existe déjà depuis une version précédente
+// (chaque ALTER est encapsulé pour ne pas planter si la colonne existe déjà)
+const migrations = [
+  'ALTER TABLE scrape_runs ADD COLUMN products_found INTEGER',
+  'ALTER TABLE scrape_runs ADD COLUMN products_failed INTEGER',
+  'ALTER TABLE products ADD COLUMN group_key TEXT',
+];
+for (const sql of migrations) {
+  try {
+    db.exec(sql);
+  } catch (e) {
+    /* colonne déjà présente, on ignore */
+  }
 }
+
 try {
-  db.exec('ALTER TABLE scrape_runs ADD COLUMN products_failed INTEGER');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_products_group_key ON products(group_key)');
 } catch (e) {
-  /* colonne déjà présente, on ignore */
+  /* déjà présent */
 }
 
 module.exports = db;

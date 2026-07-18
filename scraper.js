@@ -2,16 +2,19 @@
 //
 // IMPORTANT — à lire avant le premier run :
 // Ce scraper utilise 2 stratégies pour extraire le prix, de la plus fiable à la moins fiable :
-//   1) Le bloc JSON-LD (schema.org "Product") que beaucoup de sites e-commerce, dont IKEA,
-//      embarquent pour le SEO. C'est la méthode la plus robuste car indépendante du HTML/CSS.
+//   1) Le bloc JSON-LD (schema.org "Product") que beaucoup de sites e-commerce embarquent
+//      pour le SEO. C'est la méthode la plus robuste car indépendante du HTML/CSS.
 //   2) Un fallback par expression régulière sur le texte brut (ex: "19,90DH") si le JSON-LD
-//      est absent ou change de format.
+//      est absent — utilisé notamment sur les articles textiles/revêtements où IKEA affiche
+//      un prix par m²/mètre en plus du prix total. Dans ce cas on garde le PLUS GRAND prix
+//      valide trouvé sur la page (le prix total est presque toujours supérieur au prix
+//      unitaire/m²).
 //
-// Avant de lancer le crawl complet, teste sur UN produit (voir README "Test rapide") et
-// vérifie dans la console laquelle des deux méthodes a matché. Si aucune ne fonctionne,
-// il faudra ajuster la regex — ouvre la page produit dans un navigateur, "Afficher le
-// code source" (pas l'inspecteur, le vrai HTML livré par le serveur) et cherche "DH" ou
-// "application/ld+json" pour voir le format exact.
+// Regroupement de variantes : IKEA vend souvent un même article dans plusieurs couleurs/
+// tailles, chacune avec son propre numéro d'article. On calcule un `group_key` heuristique
+// à partir du nom (en retirant couleurs et dimensions) + catégorie, pour pouvoir regrouper
+// ces variantes dans l'interface. C'est une heuristique texte, pas un identifiant officiel
+// IKEA — elle peut se tromper sur des noms ambigus, mais couvre la grande majorité des cas.
 
 const axios = require('axios');
 const cheerio = require('cheerio');
@@ -66,10 +69,13 @@ function extractLinks(html) {
 // est en largeur (racine d'abord, puis sous-catégories), un produit retrouvé plus tard dans
 // une sous-catégorie plus précise écrase l'affectation précédente — ce qui donne en général
 // la catégorie la plus spécifique disponible.
-// NOTE: les catégories IKEA affichent ~24 produits puis un bouton "Show more" en JS.
-// Cette fonction couvre la 1ère page de chaque (sous-)catégorie, ce qui remonte déjà
-// une très large partie du catalogue grâce au nombre élevé de sous-catégories.
-async function discoverAllProductUrls({ maxCategories = 500 } = {}) {
+// NOTE CONNUE / LIMITATION : les catégories IKEA affichent ~24 produits puis un bouton
+// "Show more" en JS qui charge la suite via un appel réseau qu'on n'intercepte pas ici.
+// Cette fonction ne couvre donc que la 1ère page de chaque (sous-)catégorie. C'est la
+// raison principale pour laquelle le nombre total de produits trouvés reste inférieur au
+// catalogue complet IKEA, malgré le grand nombre de sous-catégories parcourues. Pour lever
+// cette limite complètement, il faudrait intercepter l'appel de pagination (voir README).
+async function discoverAllProductUrls({ maxCategories = 1500 } = {}) {
   const visitedCategories = new Set();
   const toVisit = [ROOT_CATEGORY];
   const productCategoryMap = new Map(); // url produit -> nom de catégorie
@@ -87,7 +93,7 @@ async function discoverAllProductUrls({ maxCategories = 500 } = {}) {
       categoryLinks.forEach((c) => {
         if (!visitedCategories.has(c)) toVisit.push(c);
       });
-      console.log(`[discover] ${url} (${categoryName}) -> ${productLinks.length} produits, ${categoryLinks.length} sous-catégories`);
+      console.log(`[discover] ${url} (${categoryName}) -> ${productLinks.length} produits, ${categoryLinks.length} sous-catégories (visitées: ${visitedCategories.size})`);
     } catch (err) {
       console.error(`[discover] échec sur ${url}: ${err.message}`);
     }
@@ -110,6 +116,40 @@ function extractCategoryName(html, url) {
     .replace(/-\d+$/, '') // retire le suffixe numérique d'ID
     .replace(/-/g, ' ')
     .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+// Dérive une clé de regroupement des variantes (couleur/taille) à partir du nom + catégorie.
+// Heuristique texte : retire dimensions ("160x235 cm") et couleurs courantes du nom, garde
+// le reste comme identifiant du "produit parent".
+const COLOR_WORDS = [
+  'blanc', 'blanche', 'noir', 'noire', 'gris', 'grise', 'bleu', 'bleue', 'rouge', 'vert', 'verte',
+  'jaune', 'beige', 'marron', 'rose', 'multicolore', 'naturel', 'naturelle', 'chêne', 'hêtre', 'pin',
+  'argenté', 'argentée', 'doré', 'dorée', 'turquoise', 'violet', 'violette', 'orange', 'crème',
+  'anthracite', 'taupe', 'écru', 'brun', 'brune', 'transparent', 'transparente',
+];
+function deriveGroupKey(name, category) {
+  if (!name) return null;
+  let base = name;
+
+  // Retire les dimensions ("160x235 cm", "60 cm", "45x45x60 cm")
+  base = base.replace(/\d+([.,]\d+)?\s*x\s*\d+([.,]\d+)?(\s*x\s*\d+([.,]\d+)?)?\s*cm/gi, '');
+  base = base.replace(/\b\d+([.,]\d+)?\s*cm\b/gi, '');
+
+  // Retire les couleurs courantes
+  const colorRegex = new RegExp('\\b(' + COLOR_WORDS.join('|') + ')\\b', 'gi');
+  base = base.replace(colorRegex, '');
+
+  base = base.replace(/,\s*,/g, ',').replace(/,\s*$/, '').replace(/\s{2,}/g, ' ').trim();
+
+  const slug = base
+    .toLowerCase()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // retire les accents
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  if (!slug) return null;
+  const catSlug = category ? category.toLowerCase().replace(/[^a-z0-9]+/g, '-') : 'general';
+  return `${catSlug}--${slug}`;
 }
 
 // Extrait { articleNumber, name, price, currency, unitNote, imageUrl } d'une page produit
@@ -147,8 +187,9 @@ function parseProductPage(html, url) {
     }
   }
 
-  // Stratégie 2: Fallback regex sur le texte brut, MAIS avec validation du prix
-  // (pour éviter de capturer des numéros d'article ou des prix de pièces détachées)
+  // Stratégie 2: Fallback regex sur le texte brut, avec validation ET sélection du plus
+  // grand prix valide trouvé (évite de capturer un prix "par m²"/"par unité" plus petit
+  // que le prix total réel de l'article).
   const bodyText = $('body').text();
   const allMatches = [];
   let match;
@@ -158,18 +199,18 @@ function parseProductPage(html, url) {
     allMatches.push({ price, match: match[0], index: match.index });
   }
 
-  // Filtre : garde seulement les prix "IKEA valides" et prend le premier trouvé
-  const validPrice = allMatches.find((m) => m.price >= 5 && m.price <= 100000);
-  if (validPrice) {
+  const validPrices = allMatches.filter((m) => m.price >= 5 && m.price <= 100000);
+  if (validPrices.length > 0) {
+    const best = validPrices.reduce((max, m) => (m.price > max.price ? m : max), validPrices[0]);
     const articleNumber = extractArticleNumberFallback($);
     return {
       articleNumber,
       name: $('h1').first().text().trim(),
-      price: validPrice.price,
+      price: best.price,
       currency: 'MAD',
-      unitNote: validPrice.match.includes('/') ? validPrice.match.split('DH')[1].trim() : null,
+      unitNote: best.match.includes('/') ? best.match.split('DH')[1].trim() : null,
       imageUrl: $('meta[property="og:image"]').attr('content') || null,
-      method: 'regex-fallback-validated',
+      method: 'regex-fallback-max-valid',
     };
   }
 
@@ -178,7 +219,7 @@ function parseProductPage(html, url) {
   if (/captcha|access denied|blocked|are you human/i.test(bodyText)) failReason = 'blocked';
   else if (!extractArticleNumberFallback($)) failReason = 'no-article-number';
   else if (allMatches.length === 0) failReason = 'no-price-pattern-found';
-  else if (allMatches.every((m) => m.price < 5 || m.price > 100000)) failReason = 'all-prices-out-of-range';
+  else if (validPrices.length === 0) failReason = 'all-prices-out-of-range';
   return { failReason, bodyLength: bodyText.length, pricesFound: allMatches.map((m) => m.price) };
 }
 
@@ -205,12 +246,13 @@ async function scrapeProduct(url, categoryName) {
 // Insère/actualise un produit + n'ajoute une ligne d'historique QUE si le prix a changé
 function upsertProduct({ articleNumber, name, url, price, currency, unitNote, imageUrl, categoryName }) {
   const existing = db.prepare('SELECT * FROM products WHERE article_number = ?').get(articleNumber);
+  const groupKey = deriveGroupKey(name, categoryName || (existing && existing.category));
 
   if (!existing) {
     db.prepare(
-      `INSERT INTO products (article_number, name, slug_url, image_url, current_price, currency, unit_note, category, last_checked_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
-    ).run(articleNumber, name, url, imageUrl, price, currency, unitNote, categoryName);
+      `INSERT INTO products (article_number, name, slug_url, image_url, current_price, currency, unit_note, category, group_key, last_checked_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`
+    ).run(articleNumber, name, url, imageUrl, price, currency, unitNote, categoryName, groupKey);
     db.prepare(
       `INSERT INTO price_history (article_number, price, currency) VALUES (?, ?, ?)`
     ).run(articleNumber, price, currency);
@@ -219,9 +261,9 @@ function upsertProduct({ articleNumber, name, url, price, currency, unitNote, im
 
   const priceChanged = existing.current_price !== price;
   db.prepare(
-    `UPDATE products SET name=?, slug_url=?, image_url=?, current_price=?, currency=?, unit_note=?, category=COALESCE(?, category), last_checked_at=datetime('now'), is_active=1
+    `UPDATE products SET name=?, slug_url=?, image_url=?, current_price=?, currency=?, unit_note=?, category=COALESCE(?, category), group_key=?, last_checked_at=datetime('now'), is_active=1
      WHERE article_number=?`
-  ).run(name, url, imageUrl, price, currency, unitNote, categoryName, articleNumber);
+  ).run(name, url, imageUrl, price, currency, unitNote, categoryName, groupKey, articleNumber);
 
   if (priceChanged) {
     db.prepare(`INSERT INTO price_history (article_number, price, currency) VALUES (?, ?, ?)`).run(
@@ -374,4 +416,26 @@ async function runFullScrape() {
   }
 }
 
-module.exports = { runFullScrape, refreshKnownProducts, scrapeProduct, discoverAllProductUrls, parseProductPage };
+// Recalcule le group_key de tous les produits existants (utile après une mise à jour de
+// la logique de regroupement, sans avoir à tout rescraper)
+function recomputeAllGroupKeys() {
+  const all = db.prepare(`SELECT article_number, name, category FROM products`).all();
+  const update = db.prepare(`UPDATE products SET group_key = ? WHERE article_number = ?`);
+  const tx = db.transaction((rows) => {
+    for (const r of rows) {
+      update.run(deriveGroupKey(r.name, r.category), r.article_number);
+    }
+  });
+  tx(all);
+  return all.length;
+}
+
+module.exports = {
+  runFullScrape,
+  refreshKnownProducts,
+  scrapeProduct,
+  discoverAllProductUrls,
+  parseProductPage,
+  deriveGroupKey,
+  recomputeAllGroupKeys,
+};

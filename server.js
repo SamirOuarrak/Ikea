@@ -3,7 +3,7 @@
 const express = require('express');
 const cron = require('node-cron');
 const db = require('./db');
-const { runFullScrape, refreshKnownProducts } = require('./scraper');
+const { runFullScrape, refreshKnownProducts, recomputeAllGroupKeys } = require('./scraper');
 
 // Au démarrage, toute ligne encore "running" provient forcément d'un process tué par un
 // redéploiement précédent (un vrai run en cours mourrait avec le process). On les marque
@@ -16,16 +16,12 @@ const PORT = process.env.PORT || 3000;
 app.use(express.static('public'));
 app.use(express.json());
 
-// ---------- PRODUITS (liste + filtres + tri) ----------
-app.get('/api/products', (req, res) => {
+// Construit la clause WHERE + params communs aux filtres produits (réutilisé plusieurs fois)
+function buildProductFilters(req) {
   const q = (req.query.q || '').trim();
   const category = (req.query.category || '').trim();
   const minPrice = req.query.minPrice ? parseFloat(req.query.minPrice) : null;
   const maxPrice = req.query.maxPrice ? parseFloat(req.query.maxPrice) : null;
-  const promoOnly = req.query.promoOnly === 'true';
-  const sort = req.query.sort || 'recent';
-  const limit = Math.min(parseInt(req.query.limit) || 60, 300);
-  const offset = parseInt(req.query.offset) || 0;
 
   const where = ['p.is_active = 1'];
   const params = [];
@@ -47,6 +43,21 @@ app.get('/api/products', (req, res) => {
     params.push(maxPrice);
   }
 
+  return { whereSql: where.join(' AND '), params };
+}
+
+// ---------- PRODUITS (liste + filtres + tri + regroupement de variantes) ----------
+// Par défaut, un seul représentant par groupe de variantes est renvoyé (la variante la
+// moins chère), avec un compteur `variant_count`. Passe groupBy=false pour tout voir à plat.
+app.get('/api/products', (req, res) => {
+  const promoOnly = req.query.promoOnly === 'true';
+  const sort = req.query.sort || 'recent';
+  const groupBy = req.query.groupBy !== 'false';
+  const limit = Math.min(parseInt(req.query.limit) || 60, 300);
+  const offset = parseInt(req.query.offset) || 0;
+
+  const { whereSql, params } = buildProductFilters(req);
+
   const sortMap = {
     recent: 'p.last_checked_at DESC',
     price_asc: 'p.current_price ASC',
@@ -56,10 +67,9 @@ app.get('/api/products', (req, res) => {
   };
   const orderBy = sortMap[sort] || sortMap.recent;
 
-  // previous_price (7 derniers jours) calculé pour permettre le tri "plus grosse baisse"
-  // et le filtre "promo uniquement"
   let sql = `
     SELECT p.*,
+      ${groupBy ? `(SELECT COUNT(*) FROM products p2 WHERE COALESCE(p2.group_key, p2.article_number) = COALESCE(p.group_key, p.article_number) AND p2.is_active = 1) AS variant_count,` : ''}
       (SELECT price FROM price_history ph
        WHERE ph.article_number = p.article_number AND ph.checked_at < datetime('now', '-7 days')
        ORDER BY ph.checked_at DESC LIMIT 1) AS previous_price_7d,
@@ -75,23 +85,48 @@ app.get('/api/products', (req, res) => {
         ELSE NULL
       END AS price_change_pct
     FROM products p
-    WHERE ${where.join(' AND ')}
+    WHERE ${whereSql}
   `;
 
   if (promoOnly) {
     sql = `SELECT * FROM (${sql}) t WHERE previous_price_7d IS NOT NULL AND price_change_pct < 0`;
   }
 
+  if (groupBy) {
+    // Ne garde qu'une ligne (la moins chère) par groupe de variantes
+    sql = `
+      SELECT * FROM (${sql}) t
+      WHERE t.current_price = (
+        SELECT MIN(t2.current_price) FROM (${sql}) t2
+        WHERE COALESCE(t2.group_key, t2.article_number) = COALESCE(t.group_key, t.article_number)
+      )
+      GROUP BY COALESCE(t.group_key, t.article_number)
+    `;
+    // sql référence deux fois les mêmes filtres -> params doivent être dupliqués
+    params.push(...params);
+  }
+
   sql += ` ORDER BY ${sort === 'biggest_drop' && !promoOnly ? 'price_change_pct ASC' : orderBy} LIMIT ? OFFSET ?`;
-  params.push(limit, offset);
+  const finalParams = [...params, limit + 1, offset]; // +1 pour détecter s'il y a une page suivante
 
   try {
-    const rows = db.prepare(sql).all(...params);
-    res.json(rows);
+    const rows = db.prepare(sql).all(...finalParams);
+    const hasMore = rows.length > limit;
+    res.json({ items: rows.slice(0, limit), hasMore });
   } catch (err) {
     console.error('Erreur /api/products:', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Liste des variantes d'un groupe (couleur/taille d'un même article)
+app.get('/api/products/group/:groupKey', (req, res) => {
+  const rows = db
+    .prepare(
+      `SELECT * FROM products WHERE is_active = 1 AND COALESCE(group_key, article_number) = ? ORDER BY current_price ASC`
+    )
+    .all(req.params.groupKey);
+  res.json(rows);
 });
 
 // Historique de prix d'un produit précis
@@ -105,20 +140,24 @@ app.get('/api/products/:articleNumber/history', (req, res) => {
 // Produits ajoutés récemment (nouveautés IKEA détectées par le crawler)
 app.get('/api/products/new', (req, res) => {
   const days = parseInt(req.query.days) || 7;
-  const rows = db
+  const limit = Math.min(parseInt(req.query.limit) || 60, 300);
+  const offset = parseInt(req.query.offset) || 0;
+  const all = db
     .prepare(
       `SELECT * FROM products WHERE is_active=1 AND first_seen_at >= datetime('now', ?) ORDER BY first_seen_at DESC`
     )
     .all(`-${days} days`);
-  res.json(rows);
+  res.json({ items: all.slice(offset, offset + limit), hasMore: offset + limit < all.length });
 });
 
 // Produits dont le prix a changé récemment
 app.get('/api/products/price-drops', (req, res) => {
   const days = parseInt(req.query.days) || 7;
-  const rows = db
+  const limit = Math.min(parseInt(req.query.limit) || 60, 300);
+  const offset = parseInt(req.query.offset) || 0;
+  const all = db
     .prepare(
-      `SELECT p.article_number, p.name, p.slug_url, p.category, p.current_price, p.currency,
+      `SELECT p.article_number, p.name, p.slug_url, p.category, p.image_url, p.current_price, p.currency,
               (SELECT price FROM price_history ph
                WHERE ph.article_number = p.article_number AND ph.checked_at < datetime('now', ?)
                ORDER BY ph.checked_at DESC LIMIT 1) AS previous_price
@@ -126,7 +165,7 @@ app.get('/api/products/price-drops', (req, res) => {
     )
     .all(`-${days} days`)
     .filter((r) => r.previous_price !== null && r.previous_price !== r.current_price);
-  res.json(rows);
+  res.json({ items: all.slice(offset, offset + limit), hasMore: offset + limit < all.length });
 });
 
 // ---------- CATÉGORIES ----------
@@ -144,6 +183,9 @@ app.get('/api/categories', (req, res) => {
 // ---------- STATS / KPIs ----------
 app.get('/api/stats', (req, res) => {
   const totalProducts = db.prepare(`SELECT COUNT(*) as c FROM products WHERE is_active=1`).get().c;
+  const totalGroups = db
+    .prepare(`SELECT COUNT(DISTINCT COALESCE(group_key, article_number)) as c FROM products WHERE is_active=1`)
+    .get().c;
   const totalValue = db.prepare(`SELECT SUM(current_price) as s FROM products WHERE is_active=1`).get().s || 0;
   const avgPrice = db.prepare(`SELECT AVG(current_price) as a FROM products WHERE is_active=1`).get().a || 0;
 
@@ -168,6 +210,7 @@ app.get('/api/stats', (req, res) => {
 
   res.json({
     totalProducts,
+    totalGroups,
     totalValue: Math.round(totalValue),
     avgPrice: Math.round(avgPrice * 100) / 100,
     drops7d,
@@ -185,7 +228,7 @@ app.get('/api/analysis/top-movers', (req, res) => {
 
   const rows = db
     .prepare(
-      `SELECT p.article_number, p.name, p.slug_url, p.category, p.current_price, p.currency,
+      `SELECT p.article_number, p.name, p.slug_url, p.category, p.image_url, p.current_price, p.currency,
               (SELECT price FROM price_history ph
                WHERE ph.article_number = p.article_number AND ph.checked_at < datetime('now', ?)
                ORDER BY ph.checked_at DESC LIMIT 1) AS previous_price
@@ -198,7 +241,7 @@ app.get('/api/analysis/top-movers', (req, res) => {
     .sort((a, b) => (direction === 'drop' ? a.changePct - b.changePct : b.changePct - a.changePct))
     .slice(0, limit);
 
-  res.json(rows);
+  res.json({ items: rows, hasMore: false });
 });
 
 // ---------- ANALYSE : tendance par catégorie (nb de baisses/hausses) ----------
@@ -227,7 +270,7 @@ app.get('/api/analysis/category-trends', (req, res) => {
 // ---------- EXPORT CSV ----------
 app.get('/api/export/csv', (req, res) => {
   const rows = db.prepare(`SELECT * FROM products WHERE is_active=1 ORDER BY category, name`).all();
-  const header = 'article_number,name,category,current_price,currency,first_seen_at,last_checked_at,url\n';
+  const header = 'article_number,name,category,current_price,currency,group_key,first_seen_at,last_checked_at,url\n';
   const csvBody = rows
     .map((r) =>
       [
@@ -236,6 +279,7 @@ app.get('/api/export/csv', (req, res) => {
         `"${(r.category || '').replace(/"/g, '""')}"`,
         r.current_price,
         r.currency,
+        r.group_key || '',
         r.first_seen_at,
         r.last_checked_at,
         r.slug_url,
@@ -277,6 +321,18 @@ app.post('/api/watchlist', (req, res) => {
 app.delete('/api/watchlist/:articleNumber', (req, res) => {
   db.prepare(`DELETE FROM watchlist WHERE article_number=?`).run(req.params.articleNumber);
   res.json({ status: 'ok' });
+});
+
+// ---------- ADMIN ----------
+// Recalcule le group_key de tous les produits (utile après une mise à jour de la logique
+// de regroupement, sans avoir à tout rescraper)
+app.post('/api/admin/recompute-groups', (req, res) => {
+  try {
+    const count = recomputeAllGroupKeys();
+    res.json({ status: 'ok', updated: count });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ---------- SCRAPING ----------
@@ -332,7 +388,6 @@ app.get('/api/debug/extract-price', async (req, res) => {
     const html = response.data;
     const $ = cheerio.load(html);
 
-    // Cherche tous les prix dans la page
     const bodyText = $('body').text();
     const allPrices = [];
     let match;
@@ -342,7 +397,6 @@ app.get('/api/debug/extract-price', async (req, res) => {
       allPrices.push({ price, match: match[0], index: match.index });
     }
 
-    // Cherche le prix en JSON-LD
     let jsonLdPrice = null;
     $('script[type="application/ld+json"]').each((_, el) => {
       if (jsonLdPrice) return;
@@ -357,7 +411,6 @@ app.get('/api/debug/extract-price', async (req, res) => {
       } catch (_) {}
     });
 
-    // H1 et structure de la page
     const h1 = $('h1').first().text().trim();
     const priceSection = $('[class*="price"], [id*="price"]').html()?.substring(0, 200) || '(not found)';
 
