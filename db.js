@@ -26,8 +26,6 @@ CREATE TABLE IF NOT EXISTS products (
   is_active         INTEGER DEFAULT 1    -- passe à 0 si le produit disparaît du site (retiré du catalogue)
 );
 
-CREATE INDEX IF NOT EXISTS idx_products_group_key ON products(group_key);
-
 CREATE TABLE IF NOT EXISTS price_history (
   id              INTEGER PRIMARY KEY AUTOINCREMENT,
   article_number  TEXT NOT NULL,
@@ -81,3 +79,4 @@ try {
 }
 
 module.exports = db;
+
