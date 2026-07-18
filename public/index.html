@@ -19,7 +19,7 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: 'Segoe UI', Roboto, Arial, sans-serif; background: var(--bg); color: var(--text); }
-  header { background: var(--ikea-blue); color: white; padding: 18px 24px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 5; }
+  header { background: var(--ikea-blue); color: white; padding: 18px 24px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 5; flex-wrap: wrap; }
   header .badge { background: var(--ikea-yellow); color: var(--ikea-blue); font-weight: 800; padding: 4px 10px; border-radius: 4px; font-size: 14px; }
   header h1 { font-size: 17px; margin: 0; font-weight: 600; flex: 1; }
   header .scrape-btn { background: var(--ikea-yellow); color: var(--ikea-blue); border: none; padding: 8px 14px; border-radius: 8px; font-weight: 700; cursor: pointer; font-size: 13px; }
@@ -35,9 +35,7 @@
   .top-bar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; align-items: center; }
   .search-bar { display: flex; gap: 8px; flex: 1; min-width: 220px; }
   .search-bar input { flex: 1; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); font-size: 14px; }
-  select, .num-input {
-    padding: 10px 10px; border-radius: 8px; border: 1px solid var(--border); font-size: 13.5px; background: white; color: var(--text);
-  }
+  select, .num-input { padding: 10px 10px; border-radius: 8px; border: 1px solid var(--border); font-size: 13.5px; background: white; color: var(--text); }
   .num-input { width: 80px; }
   button.primary { background: var(--ikea-blue); color: white; border: none; padding: 10px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13.5px; }
   button.ghost { background: white; border: 1px solid var(--border); padding: 10px 14px; border-radius: 8px; cursor: pointer; font-size: 13px; }
@@ -48,6 +46,7 @@
   .tab.active { background: var(--ikea-blue); color: white; border-color: var(--ikea-blue); }
 
   #scrape-status-text { font-size: 12.5px; color: var(--muted); }
+  #result-count { font-size: 12.5px; color: var(--muted); margin-bottom: 10px; }
 
   .product-list { display: flex; flex-direction: column; gap: 10px; }
   .product-card { background: var(--card); border-radius: 10px; padding: 12px 16px; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); gap: 10px; }
@@ -56,6 +55,7 @@
   .product-name { font-weight: 600; font-size: 14.5px; }
   .product-meta { font-size: 12px; color: var(--muted); margin-top: 3px; }
   .cat-tag { display: inline-block; background: #eef4fb; color: var(--ikea-blue); font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-right: 5px; }
+  .variant-tag { display: inline-block; background: #fff4d6; color: #92700a; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 4px; margin-left: 5px; }
   .product-price { font-weight: 700; font-size: 15.5px; white-space: nowrap; text-align: right; }
   .price-up { color: var(--red); }
   .price-down { color: var(--green); }
@@ -63,10 +63,16 @@
   .alert-tag.reached { background: var(--green); color: white; }
   .watch-btn { background: none; border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; cursor: pointer; font-size: 12px; }
 
+  .load-more-btn { display: block; margin: 20px auto; background: white; border: 1px solid var(--ikea-blue); color: var(--ikea-blue); padding: 12px 28px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 14px; }
+  .load-more-btn:disabled { opacity: 0.5; cursor: default; }
+
   #modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5); align-items: center; justify-content: center; padding: 16px; z-index: 10; }
   #modal { background: white; border-radius: 12px; padding: 20px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; }
   #modal h2 { margin-top: 0; font-size: 17px; }
   #modal .close-btn { float: right; cursor: pointer; font-size: 20px; color: var(--muted); }
+  .variant-selector { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+  .variant-chip { border: 1px solid var(--border); border-radius: 20px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; background: white; }
+  .variant-chip.active { background: var(--ikea-blue); color: white; border-color: var(--ikea-blue); }
   .watch-form { display: flex; gap: 8px; margin-top: 14px; align-items: center; }
   .watch-form input { flex: 1; padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border); }
 
@@ -88,20 +94,21 @@
 
   <div class="top-bar">
     <div class="search-bar">
-      <input id="search-input" type="text" placeholder="Rechercher un produit..." onkeydown="if(event.key==='Enter') loadProducts()" />
-      <button class="primary" onclick="loadProducts()">Rechercher</button>
+      <input id="search-input" type="text" placeholder="Rechercher un produit..." onkeydown="if(event.key==='Enter') resetAndLoad()" />
+      <button class="primary" onclick="resetAndLoad()">Rechercher</button>
     </div>
-    <select id="category-filter" onchange="loadProducts()"><option value="">Toutes catégories</option></select>
-    <input class="num-input" id="min-price" type="number" placeholder="Min DH" onchange="loadProducts()" />
-    <input class="num-input" id="max-price" type="number" placeholder="Max DH" onchange="loadProducts()" />
-    <select id="sort-select" onchange="loadProducts()">
+    <select id="category-filter" onchange="resetAndLoad()"><option value="">Toutes catégories</option></select>
+    <input class="num-input" id="min-price" type="number" placeholder="Min DH" onchange="resetAndLoad()" />
+    <input class="num-input" id="max-price" type="number" placeholder="Max DH" onchange="resetAndLoad()" />
+    <select id="sort-select" onchange="resetAndLoad()">
       <option value="recent">Plus récent</option>
       <option value="price_asc">Prix croissant</option>
       <option value="price_desc">Prix décroissant</option>
       <option value="name">Nom (A-Z)</option>
       <option value="biggest_drop">Plus grosse baisse</option>
     </select>
-    <label class="checkbox"><input type="checkbox" id="promo-only" onchange="loadProducts()" /> Promo uniquement</label>
+    <label class="checkbox"><input type="checkbox" id="promo-only" onchange="resetAndLoad()" /> Promo uniquement</label>
+    <label class="checkbox"><input type="checkbox" id="group-variants" checked onchange="resetAndLoad()" /> Regrouper variantes</label>
     <button class="ghost" onclick="window.location.href='/api/export/csv'">⬇️ Export CSV</button>
   </div>
 
@@ -114,9 +121,11 @@
     <div class="tab" data-tab="watchlist" onclick="switchTab('watchlist')">🔔 Mes alertes</div>
   </div>
 
+  <div id="result-count"></div>
   <div id="product-list" class="product-list">
     <div class="empty-state">Chargement...</div>
   </div>
+  <button id="load-more-btn" class="load-more-btn" style="display:none;" onclick="loadMore()">Charger plus</button>
 </main>
 
 <div id="modal-overlay" onclick="if(event.target===this) closeModal()">
@@ -124,6 +133,7 @@
     <span class="close-btn" onclick="closeModal()">&times;</span>
     <h2 id="modal-title">Produit</h2>
     <a id="modal-link" href="#" target="_blank" rel="noopener" style="font-size:13px; color:var(--ikea-blue); display:inline-block; margin-bottom:10px;">Voir sur IKEA.ma ↗</a>
+    <div id="variant-selector" class="variant-selector"></div>
     <canvas id="price-chart" height="220"></canvas>
     <div class="watch-form">
       <input id="target-price-input" type="number" placeholder="Prix cible (DH)" />
@@ -136,6 +146,9 @@
 let currentTab = 'all';
 let chartInstance = null;
 let currentArticleNumber = null;
+let currentOffset = 0;
+let currentHasMore = false;
+let currentItems = [];
 
 async function loadKpis() {
   try {
@@ -144,7 +157,8 @@ async function loadKpis() {
     const grid = document.getElementById('kpi-grid');
     const lastRunText = s.lastRun ? new Date(s.lastRun.started_at).toLocaleString('fr-FR') : 'Jamais';
     grid.innerHTML = [
-      ['Produits suivis', s.totalProducts, ''],
+      ['Articles suivis', s.totalProducts, ''],
+      ['Produits uniques (hors variantes)', s.totalGroups, ''],
       ['Valeur totale catalogue', s.totalValue.toLocaleString('fr-FR') + ' DH', ''],
       ['Prix moyen', s.avgPrice + ' DH', ''],
       ['Baisses (7j)', s.drops7d, 'green'],
@@ -168,47 +182,71 @@ async function loadCategories() {
   } catch (err) { /* silencieux */ }
 }
 
-async function loadProducts() {
-  const listEl = document.getElementById('product-list');
-  listEl.innerHTML = '<div class="empty-state">Chargement...</div>';
+function resetAndLoad() {
+  currentOffset = 0;
+  currentItems = [];
+  loadProducts(false);
+}
 
-  if (currentTab === 'watchlist') return loadWatchlist();
-
+function buildQueryUrl(offset) {
   const q = document.getElementById('search-input').value.trim();
   const category = document.getElementById('category-filter').value;
   const minPrice = document.getElementById('min-price').value;
   const maxPrice = document.getElementById('max-price').value;
   const sort = document.getElementById('sort-select').value;
   const promoOnly = document.getElementById('promo-only').checked;
+  const groupBy = document.getElementById('group-variants').checked;
 
-  let url;
-  if (currentTab === 'new') url = '/api/products/new?days=7';
-  else if (currentTab === 'drops') url = '/api/products/price-drops?days=7';
-  else if (currentTab === 'topdrops') url = '/api/analysis/top-movers?direction=drop&days=7&limit=30';
-  else if (currentTab === 'toprises') url = '/api/analysis/top-movers?direction=rise&days=7&limit=30';
-  else {
-    const params = new URLSearchParams();
-    if (q) params.set('q', q);
-    if (category) params.set('category', category);
-    if (minPrice) params.set('minPrice', minPrice);
-    if (maxPrice) params.set('maxPrice', maxPrice);
-    if (sort) params.set('sort', sort);
-    if (promoOnly) params.set('promoOnly', 'true');
-    url = '/api/products?' + params.toString();
-  }
+  if (currentTab === 'new') return '/api/products/new?days=7&offset=' + offset;
+  if (currentTab === 'drops') return '/api/products/price-drops?days=7&offset=' + offset;
+  if (currentTab === 'topdrops') return '/api/analysis/top-movers?direction=drop&days=7&limit=30';
+  if (currentTab === 'toprises') return '/api/analysis/top-movers?direction=rise&days=7&limit=30';
+
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (category) params.set('category', category);
+  if (minPrice) params.set('minPrice', minPrice);
+  if (maxPrice) params.set('maxPrice', maxPrice);
+  if (sort) params.set('sort', sort);
+  if (promoOnly) params.set('promoOnly', 'true');
+  params.set('groupBy', groupBy ? 'true' : 'false');
+  params.set('offset', offset);
+  return '/api/products?' + params.toString();
+}
+
+async function loadProducts(append) {
+  const listEl = document.getElementById('product-list');
+  const loadMoreBtn = document.getElementById('load-more-btn');
+  if (!append) listEl.innerHTML = '<div class="empty-state">Chargement...</div>';
+
+  if (currentTab === 'watchlist') { loadMoreBtn.style.display = 'none'; return loadWatchlist(); }
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(buildQueryUrl(currentOffset));
     const data = await res.json();
-    renderList(data);
+    const items = data.items || data; // compat si jamais un endpoint renvoie un tableau brut
+    currentHasMore = !!data.hasMore;
+    currentItems = append ? currentItems.concat(items) : items;
+    renderList(currentItems);
+    loadMoreBtn.style.display = currentHasMore ? 'block' : 'none';
+    loadMoreBtn.disabled = false;
+    loadMoreBtn.textContent = 'Charger plus';
+    document.getElementById('result-count').textContent = currentItems.length + (currentHasMore ? '+' : '') + ' résultat(s)';
   } catch (err) {
     listEl.innerHTML = '<div class="empty-state">Erreur de chargement.</div>';
   }
 }
 
+function loadMore() {
+  const loadMoreBtn = document.getElementById('load-more-btn');
+  loadMoreBtn.disabled = true;
+  loadMoreBtn.textContent = 'Chargement...';
+  currentOffset += 60;
+  loadProducts(true);
+}
+
 function priceBlock(p) {
   if (p.changePct !== undefined) {
-    // Tab "topdrops" ou "toprises" : affiche le % et les deux prix
     const cls = p.changePct > 0 ? 'price-up' : 'price-down';
     const arrow = p.changePct > 0 ? '▲' : '▼';
     return '<div class="product-price ' + cls + '">'
@@ -218,7 +256,6 @@ function priceBlock(p) {
       + '</div>';
   }
   if (currentTab === 'drops') {
-    // Tab "Changements de prix" : affiche les deux prix et le changement
     const diff = p.current_price - p.previous_price;
     const diffPct = (diff / p.previous_price) * 100;
     const cls = diff > 0 ? 'price-up' : 'price-down';
@@ -229,9 +266,7 @@ function priceBlock(p) {
       + '<div class="product-meta" style="font-size:11px;">avant: ' + p.previous_price + ' DH</div>'
       + '</div>';
   }
-  
-  // Tabs normaux : affiche le prix actuel, et en petit l'ancien prix s'il existe dans l'API
-  // (fallback si on n'a pas encore fait le calcul côté API)
+
   const oldPrice = p.previous_price_7d;
   let html = '<div class="product-price">' + (p.current_price ?? '?') + ' <span style="font-size:11px;">' + (p.currency || 'DH') + '</span>';
   if (oldPrice && oldPrice !== p.current_price) {
@@ -257,14 +292,16 @@ function renderList(items) {
   listEl.innerHTML = items.map(p => {
     const isNew = currentTab === 'new' ? '<span class="new-tag">NOUVEAU</span>' : '';
     const catTag = p.category ? '<span class="cat-tag">' + p.category + '</span>' : '';
+    const variantTag = (p.variant_count && p.variant_count > 1) ? '<span class="variant-tag">' + p.variant_count + ' variantes</span>' : '';
     const safeName = (p.name || '').replace(/'/g, '');
+    const groupKey = (p.group_key || p.article_number || '').replace(/'/g, '');
     const thumb = p.image_url
       ? '<img class="product-thumb" src="' + p.image_url + '" loading="lazy" onerror="this.style.display=\'none\'" />'
       : '<div class="product-thumb"></div>';
     return '<div class="product-card">'
-      + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + safeName + '\', \'' + (p.slug_url||'') + '\')">'
+      + '<div class="clickable" onclick="openHistory(\'' + p.article_number + '\', \'' + safeName + '\', \'' + (p.slug_url||'') + '\', \'' + groupKey + '\')">'
       + thumb
-      + '<div><div class="product-name">' + catTag + p.name + isNew + '</div>'
+      + '<div><div class="product-name">' + catTag + p.name + isNew + variantTag + '</div>'
       + '<div class="product-meta">Réf. ' + p.article_number
       + (p.slug_url ? ' · <a href="' + p.slug_url + '" target="_blank" rel="noopener" onclick="event.stopPropagation()" style="color:var(--ikea-blue);">Voir sur IKEA.ma ↗</a>' : '')
       + '</div></div></div>'
@@ -326,11 +363,13 @@ async function removeFromWatchlist(articleNumber) {
 
 function switchTab(tab) {
   currentTab = tab;
+  currentOffset = 0;
+  currentItems = [];
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === tab));
-  loadProducts();
+  loadProducts(false);
 }
 
-async function openHistory(articleNumber, name, url) {
+async function openHistory(articleNumber, name, url, groupKey) {
   currentArticleNumber = articleNumber;
   document.getElementById('modal-title').textContent = name;
   document.getElementById('target-price-input').value = '';
@@ -339,6 +378,38 @@ async function openHistory(articleNumber, name, url) {
   else { linkEl.style.display = 'none'; }
   document.getElementById('modal-overlay').style.display = 'flex';
 
+  // Sélecteur de variantes (si applicable)
+  const selectorEl = document.getElementById('variant-selector');
+  selectorEl.innerHTML = '';
+  if (groupKey) {
+    try {
+      const res = await fetch('/api/products/group/' + encodeURIComponent(groupKey));
+      const variants = await res.json();
+      if (variants.length > 1) {
+        selectorEl.innerHTML = variants.map(v => {
+          const label = (v.name.replace(/'/g,'').split(',').slice(1).join(',').trim() || v.name).slice(0, 24);
+          const isActive = v.article_number === articleNumber;
+          return '<span class="variant-chip' + (isActive ? ' active' : '') + '" onclick="switchVariant(\'' + v.article_number + '\', \'' + v.name.replace(/'/g,'') + '\', \'' + (v.slug_url||'') + '\')">'
+            + label + ' — ' + v.current_price + ' DH</span>';
+        }).join('');
+      }
+    } catch (err) { /* pas grave si ça échoue, on affiche juste sans sélecteur */ }
+  }
+
+  await loadChart(articleNumber);
+}
+
+async function switchVariant(articleNumber, name, url) {
+  currentArticleNumber = articleNumber;
+  document.getElementById('modal-title').textContent = name;
+  const linkEl = document.getElementById('modal-link');
+  if (url) { linkEl.href = url; linkEl.style.display = 'inline-block'; }
+  document.querySelectorAll('.variant-chip').forEach(c => c.classList.remove('active'));
+  event.target.classList.add('active');
+  await loadChart(articleNumber);
+}
+
+async function loadChart(articleNumber) {
   const res = await fetch('/api/products/' + articleNumber + '/history');
   const history = await res.json();
 
@@ -348,25 +419,25 @@ async function openHistory(articleNumber, name, url) {
   if (chartInstance) chartInstance.destroy();
   chartInstance = new Chart(document.getElementById('price-chart'), {
     type: 'line',
-    data: { 
-      labels, 
-      datasets: [{ 
-        label: 'Prix (DH)', 
-        data: prices, 
-        borderColor: '#0058a3', 
-        backgroundColor: 'rgba(0,88,163,0.08)', 
-        fill: true, 
-        stepped: true, 
+    data: {
+      labels,
+      datasets: [{
+        label: 'Prix (DH)',
+        data: prices,
+        borderColor: '#0058a3',
+        backgroundColor: 'rgba(0,88,163,0.08)',
+        fill: true,
+        stepped: true,
         pointRadius: 4,
         pointHoverRadius: 6,
         pointBackgroundColor: '#0058a3',
         pointBorderColor: 'white',
         pointBorderWidth: 2,
-      }] 
+      }]
     },
-    options: { 
-      responsive: true, 
-      plugins: { 
+    options: {
+      responsive: true,
+      plugins: {
         legend: { display: false },
         tooltip: {
           backgroundColor: 'rgba(0,0,0,0.8)',
@@ -389,8 +460,8 @@ async function openHistory(articleNumber, name, url) {
             }
           }
         }
-      }, 
-      scales: { y: { beginAtZero: false, ticks: { callback: (v) => v + ' DH' } } } 
+      },
+      scales: { y: { beginAtZero: false, ticks: { callback: (v) => v + ' DH' } } }
     }
   });
 }
@@ -434,7 +505,7 @@ async function pollScrapeStatus() {
       setTimeout(pollScrapeStatus, 5000);
     } else if (latest.status === 'done') {
       statusText.textContent = '✅ Dernier scraping : ' + latest.products_seen + ' réussis, ' + (latest.products_failed || 0) + ' échecs, ' + latest.products_new + ' nouveaux, ' + latest.prices_changed + ' prix changés.';
-      loadProducts();
+      resetAndLoad();
       loadKpis();
       loadCategories();
     } else {
@@ -447,7 +518,7 @@ async function pollScrapeStatus() {
 
 loadKpis();
 loadCategories();
-loadProducts();
+loadProducts(false);
 pollScrapeStatus();
 </script>
 
